@@ -1,0 +1,166 @@
+---
+title: "Salmon"
+author: "Jimmy Breen"
+date: "18/11/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Analysis of Heat Shock Proteins (HSPs) from `salmon`
+
+After adding curated HSPs and running `salmon` to accurately quantify these transcripts, we now need to extract that information and describe the expression.
+
+1. Load packages for the analysis
+
+```{r message=FALSE, warning=FALSE}
+library(tximport)
+library(GenomicFeatures)
+library(tidyverse)
+```
+
+2. Load group information for the plots later on
+
+```{r}
+groupInfo <- readxl::read_excel("PodarcisMuralis_TranscriptomeMetadata_jan2020.xlsx")
+
+annot <- groupInfo %>%
+  tibble::column_to_rownames(var = "TRANSCRIPTOME") %>%
+  dplyr::select(-`OUR ID`, -`INDIVIDUAL`)
+  
+```
+
+3. Load `salmon` results from the command-line information
+
+_NOTE: LSH41 didnt work for some reason so I can removed that_
+
+```{r message=FALSE, warning=FALSE}
+
+dirs <- list.files("salmon/quants")
+quant_files <- list.files("salmon/quants", 
+                          pattern="quant.sf",
+                          recursive = TRUE,
+                          full.names = TRUE)
+names(quant_files) <- dirs
+quant_files
+
+```
+
+
+```{r message=FALSE, warning=FALSE}
+
+sampleNames <- gsub(".fq.gz_quant/quant.sf$", "", quant_files)
+sampleNames <- gsub("^salmon/quants/", "", sampleNames)
+
+quants <- lapply(quant_files, read_tsv) 
+names(quants) <- sampleNames
+
+```
+
+
+```{r}
+quantsLess <- lapply(quants, function(x){
+  x[,c(1,4)] %>% 
+    tibble::column_to_rownames(var = "Name")
+  }
+)
+
+
+quantsCombined <- do.call(cbind, quantsLess)
+colnames(quantsCombined) <- names(quants)
+
+```
+
+
+4. Quick clustering to see how the samples compare to each other
+
+```{r fig.width = 8, fig.height = 6}
+
+df <- t(quantsCombined)
+
+pca_res <- prcomp(df)
+
+as.data.frame(pca_res$x) %>%
+  tibble::rownames_to_column(var = "Sample") %>%
+  left_join(groupInfo, by = c("Sample" = "TRANSCRIPTOME")) %>%
+  ggplot(aes(PC1, PC2, colour = TISSUE)) +
+  geom_point(size = 5) +
+  theme_bw()
+
+```
+
+PC1 shows about 50% of the variation across the dataset, which (thankfully) splits by tissue!
+Looks like Brain, Lung and Heart are very similar to each other.
+Liver seems to have a decent amount of variability.
+
+There are a few Brain and Liver samples that are very variable so they could be due to RIN scores
+
+```{r fig.width = 8, fig.height = 6}
+as.data.frame(pca_res$x) %>%
+  tibble::rownames_to_column(var = "Sample") %>%
+  left_join(groupInfo, by = c("Sample" = "TRANSCRIPTOME")) %>%
+  ggplot(aes(PC1, PC2, colour = RIN)) +
+  geom_point(size = 5) +
+  theme_bw()
+```
+
+Not too much to be honest, but it is clear that RIN scores are driving variation as well.
+
+Looking at both treatment and tissue, there does seem to be some split in treatments, which is again a very good sign!
+
+```{r fig.width = 8, fig.height = 6}
+as.data.frame(pca_res$x) %>%
+  tibble::rownames_to_column(var = "Sample") %>%
+  left_join(groupInfo, by = c("Sample" = "TRANSCRIPTOME")) %>%
+  ggplot(aes(PC1, PC2, colour = TISSUE, shape = TREATMENT)) +
+  geom_point(size = 5) +
+  theme_bw()
+```
+
+3. Subset our data and combine into a TPM table of transcripts
+
+Now lets boil down to the specific HSP transcripts
+
+```{r}
+annotatedHsps <- quantsCombined %>%
+  dplyr::filter(grepl("DNA", rownames(quantsCombined)))
+
+
+rownames(annotatedHsps) <- gsub("^40_", "", rownames(annotatedHsps))
+rownames(annotatedHsps) <- gsub("_Podarcis_muralis", "", rownames(annotatedHsps))
+
+head(annotatedHsps)
+```
+
+4. Lets plot the expression of these HSP transcripts
+
+Firstly, this heatmap will just look at the RIN values of the samples, initially to see whether there is any specific bias from these values
+
+```{r fig.width = 10, fig.height = 8}
+annotatedHsps <- log(annotatedHsps)
+annotatedHsps[annotatedHsps == -Inf] <- 0
+
+annotRINs <- annot %>%
+  dplyr::select(RIN)
+
+pheatmap::pheatmap(data.matrix(annotatedHsps), annotation_col = annotRINs)
+```
+
+There does looks to be a slight bias with the RIN values of the Brain samples, although this could also be associated to the tissue expression.
+The next plot looks specifically at Tissue, Treatment and Sex of the samples
+
+```{r fig.width = 12, fig.height = 8}
+
+annotPheno <- annot %>%
+  dplyr::select(-RIN)
+
+pheatmap::pheatmap(data.matrix(annotatedHsps), annotation_col = annotPheno)
+```
+
+```{r}
+sessionInfo()
+```
+
+
